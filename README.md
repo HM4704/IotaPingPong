@@ -1,1 +1,1 @@
-Spamminh tool for IOTA goshimmer nodes.
+Spamming tool for IOTA goshimmer nodes.
