@@ -134,8 +134,10 @@ func main() {
 	//nodeAPIURL := "http://nodes.nectar.iota.cafe"
 
 	//*nodeAPIURL = "http://localhost:8080"
+	flag.Parse()
+	fmt.Printf("spamming with %d nodes\n", *nbrNodes)
 
-	nodes := GetNodes(GetRandomNode(*nodeAPIURL, *nbrNodes), *nbrNodes)
+	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* chose from all neighbours */), *nbrNodes)
 	var wg sync.WaitGroup
 
 	for _, node := range nodes {
