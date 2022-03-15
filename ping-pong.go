@@ -20,6 +20,26 @@ import (
 	"github.com/iotaledger/goshimmer/packages/ledgerstate"
 )
 
+func main() {
+	nbrNodes := flag.Int("nbrNodes", 5, "Number of nodes you want to test against")
+	myNode := flag.String("node", "http://nodes.nectar.iota.cafe", "Valid node for initial transactions")
+
+	nodeAPIURL := myNode
+
+	flag.Parse()
+	fmt.Printf("spamming with %d nodes\n", *nbrNodes)
+
+	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* chose from all neighbors */), *nbrNodes)
+	var wg sync.WaitGroup
+
+	for _, node := range nodes {
+		wg.Add(1)
+
+		go pingPong(node, &wg)
+	}
+	wg.Wait()
+}
+
 func pingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 
 	defer wg.Done()
@@ -38,6 +58,7 @@ func pingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 
 	pongSeed := walletseed.NewSeed()
 
+	// fetch funds from faucet
 	for {
 		if _, err := client.SendFaucetRequest(pingSeed.Address(0).Base58(), -1); err != nil {
 			fmt.Println(err)
@@ -55,44 +76,17 @@ func pingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 	}
 
 	nodeId, err := mana.IDFromStr("E35sPFNueGQHgQCUFJPsz4mqqmFzD3tHbEho5H4nZTu7")
+
 	// split utxo into 100
 	count := 100
-	outIDs := make([]ledgerstate.OutputID, count)
-	{
-		outs := make([]ledgerstate.Output, count)
-		for l := 0; l < count; l++ {
-			outs[l] = ledgerstate.NewSigLockedColoredOutput(ledgerstate.NewColoredBalances(map[ledgerstate.Color]uint64{
-				ledgerstate.ColorIOTA: uint64(1000000 / count),
-			}), pingSeed.Address(uint64(l+1)).Address())
-		}
-		txEssence := ledgerstate.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
-			ledgerstate.NewInputs(ledgerstate.NewUTXOInput(out[0])), ledgerstate.NewOutputs(outs...))
-		kp := *pingSeed.KeyPair(0)
-		sig := ledgerstate.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
-		unlockBlock := ledgerstate.NewSignatureUnlockBlock(sig)
-		tx := ledgerstate.NewTransaction(txEssence, ledgerstate.UnlockBlocks{unlockBlock})
-
-		// issue the tx
-		//fmt.Println("PostTransaction")
-
-		for {
-			_, err2 := client.PostTransaction(tx.Bytes())
-			if err2 != nil {
-				fmt.Println(err2)
-				//				return
-				continue
-			}
-			//fmt.Println(resp.TransactionID)
-			break
-		}
-		outIDs, err = WaitForFunds(client, pingSeed, count, 1)
-		if err != nil {
-			fmt.Println("malformed OutputID")
-			return
-		}
+	outIDs, err1 := SplitUTXO(client, pingSeed, out, count, nodeId)
+	if err1 != nil {
+		fmt.Println("Error from SplitUTXO ", err)
+		return
 	}
 
-	for r := 0; r < 100; r++ {
+	loopcount := 100
+	for r := 0; r < loopcount; r++ {
 		offs := r * count
 		// send to pong
 		fmt.Println("\n***** send to pong ******")
@@ -123,29 +117,6 @@ func pingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 	fmt.Println("\n************ FINISHED ****************\n")
 
 	return
-}
-
-func main() {
-	nbrNodes := flag.Int("nbrNodes", 5, "Number of nodes you want to test against")
-	myNode := flag.String("node", "http://nodes.nectar.iota.cafe", "Valid node for initial transactions")
-
-	nodeAPIURL := myNode
-	//nodeAPIURL := "http://192.168.178.33:8080"
-	//nodeAPIURL := "http://nodes.nectar.iota.cafe"
-
-	//*nodeAPIURL = "http://localhost:8080"
-	flag.Parse()
-	fmt.Printf("spamming with %d nodes\n", *nbrNodes)
-
-	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* chose from all neighbours */), *nbrNodes)
-	var wg sync.WaitGroup
-
-	for _, node := range nodes {
-		wg.Add(1)
-
-		go pingPong(node, &wg)
-	}
-	wg.Wait()
 }
 
 func GetRandomNode(url string, numberOfNodes int) string {
@@ -191,6 +162,37 @@ func GetNodes(url string, numberOfNodes int) []string {
 
 	}
 	return nodes
+}
+
+func SplitUTXO(client *client.GoShimmerAPI, pingSeed *walletseed.Seed, inputs []ledgerstate.OutputID, count int, nodeId identity.ID) (outIDs []ledgerstate.OutputID, err error) {
+	outIDs = make([]ledgerstate.OutputID, count)
+	outs := make([]ledgerstate.Output, count)
+	for l := 0; l < count; l++ {
+		outs[l] = ledgerstate.NewSigLockedColoredOutput(ledgerstate.NewColoredBalances(map[ledgerstate.Color]uint64{
+			ledgerstate.ColorIOTA: uint64(1000000 / count),
+		}), pingSeed.Address(uint64(l+1)).Address())
+	}
+	txEssence := ledgerstate.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
+		ledgerstate.NewInputs(ledgerstate.NewUTXOInput(inputs[0])), ledgerstate.NewOutputs(outs...))
+	kp := *pingSeed.KeyPair(0)
+	sig := ledgerstate.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
+	unlockBlock := ledgerstate.NewSignatureUnlockBlock(sig)
+	tx := ledgerstate.NewTransaction(txEssence, ledgerstate.UnlockBlocks{unlockBlock})
+
+	for {
+		_, err2 := client.PostTransaction(tx.Bytes())
+		if err2 != nil {
+			fmt.Println(err2)
+			continue
+		}
+		break
+	}
+	outIDs, err = WaitForFunds(client, pingSeed, count, 1)
+	if err != nil {
+		fmt.Println("malformed OutputID")
+		return
+	}
+	return outIDs, err
 }
 
 func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int, addrOffs int) (outputID []ledgerstate.OutputID, err error) {
