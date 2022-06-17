@@ -11,13 +11,15 @@ import (
 	"time"
 
 	"github.com/iotaledger/goshimmer/packages/consensus/gof"
+	"github.com/iotaledger/goshimmer/packages/ledger/utxo"
+	"github.com/iotaledger/goshimmer/packages/ledger/vm/devnetvm"
 	"github.com/iotaledger/goshimmer/packages/mana"
+	"github.com/iotaledger/hive.go/generics/lo"
 	"github.com/iotaledger/hive.go/identity"
 
 	"github.com/iotaledger/goshimmer/client"
 	"github.com/iotaledger/goshimmer/client/wallet"
 	walletseed "github.com/iotaledger/goshimmer/client/wallet/packages/seed"
-	"github.com/iotaledger/goshimmer/packages/ledgerstate"
 )
 
 func main() {
@@ -29,18 +31,19 @@ func main() {
 	flag.Parse()
 	fmt.Printf("spamming with %d nodes\n", *nbrNodes)
 
-	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* chose from all neighbors */), *nbrNodes)
+	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes)
 	var wg sync.WaitGroup
 
 	for _, node := range nodes {
 		wg.Add(1)
 
-		go pingPong(node, &wg)
+		go PingPong(node, &wg)
+		time.Sleep(2000 * time.Millisecond)
 	}
 	wg.Wait()
 }
 
-func pingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
+func PingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 
 	defer wg.Done()
 
@@ -119,6 +122,14 @@ func pingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 	return
 }
 
+func IsNodeSynced(api *client.GoShimmerAPI) bool {
+	info, err := api.Info()
+	if (err == nil) && (info.TangleTime.Synced) {
+		return true
+	}
+	return false
+}
+
 func GetRandomNode(url string, numberOfNodes int) string {
 	nodes := GetNodes(url, numberOfNodes)
 
@@ -164,23 +175,24 @@ func GetNodes(url string, numberOfNodes int) []string {
 	return nodes
 }
 
-func SplitUTXO(client *client.GoShimmerAPI, pingSeed *walletseed.Seed, inputs []ledgerstate.OutputID, count int, nodeId identity.ID) (outIDs []ledgerstate.OutputID, err error) {
-	outIDs = make([]ledgerstate.OutputID, count)
-	outs := make([]ledgerstate.Output, count)
+func SplitUTXO(client *client.GoShimmerAPI, pingSeed *walletseed.Seed, inputs []utxo.OutputID, count int, nodeId identity.ID) (outIDs []utxo.OutputID, err error) {
+	outIDs = make([]utxo.OutputID, count)
+	outs := make([]devnetvm.Output, count)
 	for l := 0; l < count; l++ {
-		outs[l] = ledgerstate.NewSigLockedColoredOutput(ledgerstate.NewColoredBalances(map[ledgerstate.Color]uint64{
-			ledgerstate.ColorIOTA: uint64(1000000 / count),
+		outs[l] = devnetvm.NewSigLockedColoredOutput(devnetvm.NewColoredBalances(map[devnetvm.Color]uint64{
+			devnetvm.ColorIOTA: uint64(1000000 / count),
 		}), pingSeed.Address(uint64(l+1)).Address())
 	}
-	txEssence := ledgerstate.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
-		ledgerstate.NewInputs(ledgerstate.NewUTXOInput(inputs[0])), ledgerstate.NewOutputs(outs...))
+	txEssence := devnetvm.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
+		devnetvm.NewInputs(devnetvm.NewUTXOInput(inputs[0])), devnetvm.NewOutputs(outs...))
 	kp := *pingSeed.KeyPair(0)
-	sig := ledgerstate.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
-	unlockBlock := ledgerstate.NewSignatureUnlockBlock(sig)
-	tx := ledgerstate.NewTransaction(txEssence, ledgerstate.UnlockBlocks{unlockBlock})
+	sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(lo.PanicOnErr(txEssence.Bytes())))
+	//sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
+	unlockBlock := devnetvm.NewSignatureUnlockBlock(sig)
+	tx := devnetvm.NewTransaction(txEssence, devnetvm.UnlockBlocks{unlockBlock})
 
 	for {
-		_, err2 := client.PostTransaction(tx.Bytes())
+		_, err2 := client.PostTransaction(lo.PanicOnErr(tx.Bytes()))
 		if err2 != nil {
 			fmt.Println(err2)
 			continue
@@ -195,10 +207,10 @@ func SplitUTXO(client *client.GoShimmerAPI, pingSeed *walletseed.Seed, inputs []
 	return outIDs, err
 }
 
-func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int, addrOffs int) (outputID []ledgerstate.OutputID, err error) {
+func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int, addrOffs int) (outputID []utxo.OutputID, err error) {
 	var myOutputID string
 	var confirmed bool
-	outputID = make([]ledgerstate.OutputID, count)
+	outputID = make([]utxo.OutputID, count)
 	// wait for the funds
 	fmt.Println("Waiting for funds to be confirmed...")
 	for c := 0; c < count; c++ {
@@ -233,7 +245,7 @@ func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int,
 			return nil, errors.New("OutputID not confirmed")
 		}
 
-		outputID[c], err = ledgerstate.OutputIDFromBase58(myOutputID)
+		err = outputID[c].FromBase58(myOutputID)
 		if err != nil {
 			return
 		}
@@ -242,12 +254,12 @@ func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int,
 	return outputID, err
 }
 
-func PostTransactions(client *client.GoShimmerAPI, rcvSeed *walletseed.Seed, sndSeed *walletseed.Seed, count int, offs int, rcvOffs int, outIDs []ledgerstate.OutputID,
+func PostTransactions(client *client.GoShimmerAPI, rcvSeed *walletseed.Seed, sndSeed *walletseed.Seed, count int, offs int, rcvOffs int, outIDs []utxo.OutputID,
 	nodeId identity.ID) (err error) {
 	fmt.Println("PostTransactions")
 	for l := 0; l < count; l++ {
-		output := ledgerstate.NewSigLockedColoredOutput(ledgerstate.NewColoredBalances(map[ledgerstate.Color]uint64{
-			ledgerstate.ColorIOTA: uint64(1000000 / count),
+		output := devnetvm.NewSigLockedColoredOutput(devnetvm.NewColoredBalances(map[devnetvm.Color]uint64{
+			devnetvm.ColorIOTA: uint64(1000000 / count),
 		}), rcvSeed.Address(uint64(l+rcvOffs)).Address())
 
 		kp := *sndSeed.KeyPair(uint64(l + offs))
@@ -255,13 +267,14 @@ func PostTransactions(client *client.GoShimmerAPI, rcvSeed *walletseed.Seed, snd
 		// issue the tx
 		//fmt.Println("PostTransaction")
 		for {
-			txEssence := ledgerstate.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
-				ledgerstate.NewInputs(ledgerstate.NewUTXOInput(outIDs[l])), ledgerstate.NewOutputs(output))
-			sig := ledgerstate.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
-			unlockBlock := ledgerstate.NewSignatureUnlockBlock(sig)
-			tx := ledgerstate.NewTransaction(txEssence, ledgerstate.UnlockBlocks{unlockBlock})
+			txEssence := devnetvm.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
+				devnetvm.NewInputs(devnetvm.NewUTXOInput(outIDs[l])), devnetvm.NewOutputs(output))
+			sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(lo.PanicOnErr(txEssence.Bytes())))
+			//				sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
+			unlockBlock := devnetvm.NewSignatureUnlockBlock(sig)
+			tx := devnetvm.NewTransaction(txEssence, devnetvm.UnlockBlocks{unlockBlock})
 
-			_, err := client.PostTransaction(tx.Bytes())
+			_, err := client.PostTransaction(lo.PanicOnErr(tx.Bytes()))
 			if err != nil {
 				fmt.Println(err)
 				break
