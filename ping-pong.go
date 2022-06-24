@@ -32,8 +32,8 @@ func main() {
 	fmt.Printf("spamming with %d nodes\n", *nbrNodes)
 
 	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes)
-	var wg sync.WaitGroup
 
+	var wg sync.WaitGroup
 	for _, node := range nodes {
 		wg.Add(1)
 
@@ -47,15 +47,9 @@ func PingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 
 	defer wg.Done()
 
-	api := wallet.NewWebConnector(clientUrl)
-	status, _ := api.ServerStatus()
-	if !status.Synced {
-		return
-	}
-
 	client := client.NewGoShimmerAPI(clientUrl, client.WithHTTPClient(http.Client{Timeout: 60 * time.Second}))
 
-	fmt.Println("client %s started***\n", clientUrl)
+	fmt.Printf("client %s started***\n", clientUrl)
 
 	pingSeed := walletseed.NewSeed()
 
@@ -63,7 +57,7 @@ func PingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 
 	// fetch funds from faucet
 	for {
-		if _, err := client.SendFaucetRequest(pingSeed.Address(0).Base58(), -1); err != nil {
+		if _, err := client.BroadcastFaucetRequest(pingSeed.Address(0).Base58(), -1); err != nil {
 			fmt.Println(err)
 		} else {
 			break
@@ -183,15 +177,15 @@ func SplitUTXO(client *client.GoShimmerAPI, pingSeed *walletseed.Seed, inputs []
 			devnetvm.ColorIOTA: uint64(1000000 / count),
 		}), pingSeed.Address(uint64(l+1)).Address())
 	}
-	txEssence := devnetvm.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
-		devnetvm.NewInputs(devnetvm.NewUTXOInput(inputs[0])), devnetvm.NewOutputs(outs...))
-	kp := *pingSeed.KeyPair(0)
-	sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(lo.PanicOnErr(txEssence.Bytes())))
-	//sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
-	unlockBlock := devnetvm.NewSignatureUnlockBlock(sig)
-	tx := devnetvm.NewTransaction(txEssence, devnetvm.UnlockBlocks{unlockBlock})
-
 	for {
+		txEssence := devnetvm.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
+			devnetvm.NewInputs(devnetvm.NewUTXOInput(inputs[0])), devnetvm.NewOutputs(outs...))
+		kp := *pingSeed.KeyPair(0)
+		sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(lo.PanicOnErr(txEssence.Bytes())))
+		//sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(txEssence.Bytes()))
+		unlockBlock := devnetvm.NewSignatureUnlockBlock(sig)
+		tx := devnetvm.NewTransaction(txEssence, devnetvm.UnlockBlocks{unlockBlock})
+
 		_, err2 := client.PostTransaction(lo.PanicOnErr(tx.Bytes()))
 		if err2 != nil {
 			fmt.Println(err2)
@@ -229,7 +223,6 @@ func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int,
 				}
 			}
 			if myOutputID != "" && confirmed {
-				//fmt.Println("funds confirmed...")
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
