@@ -22,10 +22,10 @@ import (
 	walletseed "github.com/iotaledger/goshimmer/client/wallet/packages/seed"
 )
 
-var g_useRS *bool
+var g_useRS = new(bool)
 
 func main() {
-	g_useRS := flag.Bool("useRS", true, "Use ratesetter")
+	g_useRS = flag.Bool("useRS", true, "Use ratesetter")
 	nbrNodes := flag.Int("nbrNodes", 5, "Number of nodes you want to test against")
 	myNode := flag.String("node", "http://nodes.nectar.iota.cafe", "Valid node for initial transactions")
 
