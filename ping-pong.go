@@ -22,14 +22,17 @@ import (
 	walletseed "github.com/iotaledger/goshimmer/client/wallet/packages/seed"
 )
 
+var g_useRS *bool
+
 func main() {
+	g_useRS := flag.Bool("useRS", true, "Use ratesetter")
 	nbrNodes := flag.Int("nbrNodes", 5, "Number of nodes you want to test against")
 	myNode := flag.String("node", "http://nodes.nectar.iota.cafe", "Valid node for initial transactions")
 
 	nodeAPIURL := myNode
 
 	flag.Parse()
-	fmt.Printf("spamming with %d nodes\n", *nbrNodes)
+	fmt.Printf("spamming with %d nodes using ratesetter(%v)\n", *nbrNodes, *g_useRS)
 
 	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes)
 
@@ -178,6 +181,7 @@ func SplitUTXO(client *client.GoShimmerAPI, pingSeed *walletseed.Seed, inputs []
 		}), pingSeed.Address(uint64(l+1)).Address())
 	}
 	for {
+		SleepRateSetterEstimate(client)
 		txEssence := devnetvm.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
 			devnetvm.NewInputs(devnetvm.NewUTXOInput(inputs[0])), devnetvm.NewOutputs(outs...))
 		kp := *pingSeed.KeyPair(0)
@@ -260,6 +264,7 @@ func PostTransactions(client *client.GoShimmerAPI, rcvSeed *walletseed.Seed, snd
 		// issue the tx
 		//fmt.Println("PostTransaction")
 		for {
+			SleepRateSetterEstimate(client)
 			txEssence := devnetvm.NewTransactionEssence(0, time.Now(), nodeId, nodeId,
 				devnetvm.NewInputs(devnetvm.NewUTXOInput(outIDs[l])), devnetvm.NewOutputs(output))
 			sig := devnetvm.NewED25519Signature(kp.PublicKey, kp.PrivateKey.Sign(lo.PanicOnErr(txEssence.Bytes())))
@@ -278,4 +283,16 @@ func PostTransactions(client *client.GoShimmerAPI, rcvSeed *walletseed.Seed, snd
 		}
 	}
 	return err
+}
+
+func SleepRateSetterEstimate(client *client.GoShimmerAPI) error {
+	if *g_useRS == true {
+		res, err := client.RateSetter()
+		if err != nil {
+			fmt.Printf("Err %s in RateSetter()\n", err)
+			return err
+		}
+		time.Sleep(res.Estimate)
+	}
+	return nil
 }
