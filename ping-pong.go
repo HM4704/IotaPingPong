@@ -13,7 +13,6 @@ import (
 	"github.com/iotaledger/goshimmer/packages/consensus/gof"
 	"github.com/iotaledger/goshimmer/packages/ledger/utxo"
 	"github.com/iotaledger/goshimmer/packages/ledger/vm/devnetvm"
-	"github.com/iotaledger/goshimmer/packages/mana"
 	"github.com/iotaledger/hive.go/generics/lo"
 	"github.com/iotaledger/hive.go/identity"
 
@@ -34,7 +33,7 @@ func main() {
 	flag.Parse()
 	fmt.Printf("spamming with %d nodes using ratesetter(%v)\n", *nbrNodes, *g_useRS)
 
-	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes)
+	nodes := GetNodes(GetRandomNode(*nodeAPIURL, 8 /* choose from all neighbors */), *nbrNodes, false)
 
 	var wg sync.WaitGroup
 	for _, node := range nodes {
@@ -58,7 +57,6 @@ func PingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 
 	pongSeed := walletseed.NewSeed()
 
-	// fetch funds from faucet
 	for {
 		if _, err := client.BroadcastFaucetRequest(pingSeed.Address(0).Base58(), -1); err != nil {
 			fmt.Println(err)
@@ -75,7 +73,7 @@ func PingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 		return
 	}
 
-	nodeId, err := mana.IDFromStr("E35sPFNueGQHgQCUFJPsz4mqqmFzD3tHbEho5H4nZTu7")
+	nodeId := identity.ID{}
 
 	// split utxo into 100
 	count := 100
@@ -128,7 +126,7 @@ func IsNodeSynced(api *client.GoShimmerAPI) bool {
 }
 
 func GetRandomNode(url string, numberOfNodes int) string {
-	nodes := GetNodes(url, numberOfNodes)
+	nodes := GetNodes(url, numberOfNodes, true)
 
 	if nodes == nil {
 		return ""
@@ -136,7 +134,7 @@ func GetRandomNode(url string, numberOfNodes int) string {
 	return nodes[rand.Intn(len(nodes))]
 }
 
-func GetNodes(url string, numberOfNodes int) []string {
+func GetNodes(url string, numberOfNodes int, noCheck bool) []string {
 	var nodes []string
 	nodes = append(nodes, url)
 	if numberOfNodes == 1 {
@@ -159,10 +157,24 @@ func GetNodes(url string, numberOfNodes int) []string {
 				status, _ := api.ServerStatus()
 				if status.Synced {
 					fmt.Println(status)
-					nodes = append(nodes, "http://"+strings.Split(service.Address, ":")[0]+":8080")
-					count++
-					if count == (numberOfNodes - 1) {
-						return nodes
+					ns := "http://" + strings.Split(service.Address, ":")[0] + ":8080"
+
+					var accessMana float64 = 0
+					if noCheck == false {
+						client := client.NewGoShimmerAPI(ns, client.WithHTTPClient(http.Client{Timeout: 60 * time.Second}))
+						mana, _ := client.GetManaFullNodeID(status.ID)
+						accessMana = mana.Access
+					}
+
+					if noCheck || accessMana > 9000000000.000000 {
+						nodes = append(nodes, ns)
+						count++
+						if noCheck == false {
+							fmt.Printf("****** %s selected access mana=%f\n", ns, accessMana)
+						}
+						if count == (numberOfNodes - 1) {
+							return nodes
+						}
 					}
 				}
 			}
@@ -292,7 +304,16 @@ func SleepRateSetterEstimate(client *client.GoShimmerAPI) error {
 			fmt.Printf("Err %s in RateSetter()\n", err)
 			return err
 		}
-		time.Sleep(res.Estimate)
+		s := res.Estimate
+		if res.Estimate > 0 {
+			//			fmt.Printf("RS Estimate: %d\n", res.Estimate)
+			if res.Estimate > 100000000000 {
+				fmt.Printf("RS Estimate: %d. Limit to 5s\n", res.Estimate)
+				s = 5 * 1000 * 1000 * 1000
+			}
+
+		}
+		time.Sleep(s)
 	}
 	return nil
 }
