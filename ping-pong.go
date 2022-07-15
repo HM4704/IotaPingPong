@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iotaledger/goshimmer/packages/consensus/gof"
 	"github.com/iotaledger/goshimmer/packages/ledger/utxo"
 	"github.com/iotaledger/goshimmer/packages/ledger/vm/devnetvm"
 	"github.com/iotaledger/hive.go/generics/lo"
@@ -166,7 +165,7 @@ func GetNodes(url string, numberOfNodes int, noCheck bool) []string {
 						accessMana = mana.Access
 					}
 
-					if noCheck || accessMana > 9000000000.000000 {
+					if noCheck || accessMana > 9000000.000000 {
 						nodes = append(nodes, ns)
 						count++
 						if noCheck == false {
@@ -234,7 +233,7 @@ func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int,
 			for _, v := range resp.UnspentOutputs {
 				if len(v.Outputs) > 0 {
 					myOutputID = v.Outputs[0].Output.OutputID.Base58
-					confirmed = (v.Outputs[0].GradeOfFinality == gof.High)
+					confirmed = v.Outputs[0].ConfirmationState.IsAccepted()
 					break
 				}
 			}
