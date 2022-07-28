@@ -4,8 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +21,10 @@ import (
 	"github.com/iotaledger/goshimmer/client"
 	"github.com/iotaledger/goshimmer/client/wallet"
 	walletseed "github.com/iotaledger/goshimmer/client/wallet/packages/seed"
+	"github.com/juju/fslock"
 )
+
+const seedsFile = "wallets.dat"
 
 var g_useRS = new(bool)
 
@@ -44,7 +50,7 @@ func main() {
 	wg.Wait()
 }
 
-func PingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
+func PingPong(clientUrl string, wg *sync.WaitGroup) {
 
 	defer wg.Done()
 
@@ -52,65 +58,86 @@ func PingPong(clientUrl string, wg *sync.WaitGroup) (err error) {
 
 	fmt.Printf("client %s started***\n", clientUrl)
 
-	pingSeed := walletseed.NewSeed()
+	prepareFunds := false
+	pingSeed := LoadSeed(seedsFile)
+	//var pingSeed *walletseed.Seed = nil
+	if pingSeed == nil {
+		pingSeed = walletseed.NewSeed()
+		prepareFunds = true
+	} else {
+		fmt.Printf("wallet loaded from file. address %s\n", pingSeed.Address(uint64(1)).Address().String())
+	}
 
 	pongSeed := walletseed.NewSeed()
 
-	for {
-		if _, err := client.BroadcastFaucetRequest(pingSeed.Address(0).Base58(), -1); err != nil {
-			fmt.Println(err)
-		} else {
-			break
-		}
-	}
-
-	fmt.Println("faucet request sent\n")
-	// wait for the funds
-	out, err := WaitForFunds(client, pingSeed, 1, 0)
-	if err != nil {
-		fmt.Println("malformed OutputID")
-		return
-	}
-
 	nodeId := identity.ID{}
-
-	// split utxo into 100
 	count := 100
-	outIDs, err1 := SplitUTXO(client, pingSeed, out, count, nodeId)
-	if err1 != nil {
-		fmt.Println("Error from SplitUTXO ", err)
-		return
+	outIDs := make([]utxo.OutputID, 0)
+	err := errors.New("no err")
+	if prepareFunds {
+		for {
+			if _, err := client.BroadcastFaucetRequest(pingSeed.Address(0).Base58(), -1); err != nil {
+				fmt.Println(err)
+			} else {
+				break
+			}
+		}
+
+		fmt.Println("faucet request sent\n")
+		// wait for the funds
+		out, err := WaitForFunds(client, pingSeed, 1, 0)
+		if err != nil {
+			fmt.Println("malformed OutputID")
+			return
+		}
+
+		// split utxo into 100
+		outIDs, err = SplitUTXO(client, pingSeed, out, count, nodeId)
+		if err != nil {
+			fmt.Println("Error from SplitUTXO ", err)
+			return
+		}
+	} else {
+		outIDs = make([]utxo.OutputID, count)
+		for i := 0; i < count; i++ {
+			out, err := WaitForFunds(client, pingSeed, 1, 1+i)
+			if err != nil {
+				fmt.Println("malformed OutputID")
+				return
+			}
+			outIDs[i] = out[0]
+		}
 	}
 
 	loopcount := 100
 	for r := 0; r < loopcount; r++ {
-		offs := r * count
 		// send to pong
 		fmt.Println("\n***** send to pong ******")
-		PostTransactions(client, pongSeed, pingSeed, count, 1+offs, offs, outIDs, nodeId)
+		err = PostTransactions(client, pongSeed, pingSeed, count, 1000000/count, 1, 0, outIDs, nodeId)
 		if err != nil {
 			fmt.Println("error in PostTransactions")
 			return
 		}
-		outIDs, err = WaitForFunds(client, pongSeed, count, offs)
+		outIDs, err = WaitForFunds(client, pongSeed, count, 0)
 		if err != nil {
 			fmt.Println("malformed OutputID")
 			return
 		}
 		// send to ping
 		fmt.Println("\n***** send to ping ******")
-		PostTransactions(client, pingSeed, pongSeed, count, offs, 1+offs+count, outIDs, nodeId)
+		err = PostTransactions(client, pingSeed, pongSeed, count, 1000000/count, 0, 1, outIDs, nodeId)
 		if err != nil {
 			fmt.Println("error in PostTransactions")
 			return
 		}
-		outIDs, err = WaitForFunds(client, pingSeed, count, 1+offs+count)
+		outIDs, err = WaitForFunds(client, pingSeed, count, 1)
 		if err != nil {
 			fmt.Println("malformed OutputID")
 			return
 		}
 	}
 
+	SaveSeed(seedsFile, pingSeed)
 	fmt.Println("\n************ FINISHED ****************\n")
 
 	return
@@ -262,12 +289,12 @@ func WaitForFunds(client *client.GoShimmerAPI, seed *walletseed.Seed, count int,
 	return outputID, err
 }
 
-func PostTransactions(client *client.GoShimmerAPI, rcvSeed *walletseed.Seed, sndSeed *walletseed.Seed, count int, offs int, rcvOffs int, outIDs []utxo.OutputID,
+func PostTransactions(client *client.GoShimmerAPI, rcvSeed *walletseed.Seed, sndSeed *walletseed.Seed, count int, coins int, offs int, rcvOffs int, outIDs []utxo.OutputID,
 	nodeId identity.ID) (err error) {
 	fmt.Println("PostTransactions")
 	for l := 0; l < count; l++ {
 		output := devnetvm.NewSigLockedColoredOutput(devnetvm.NewColoredBalances(map[devnetvm.Color]uint64{
-			devnetvm.ColorIOTA: uint64(1000000 / count),
+			devnetvm.ColorIOTA: uint64(coins),
 		}), rcvSeed.Address(uint64(l+rcvOffs)).Address())
 
 		kp := *sndSeed.KeyPair(uint64(l + offs))
@@ -313,6 +340,101 @@ func SleepRateSetterEstimate(client *client.GoShimmerAPI) error {
 
 		}
 		time.Sleep(s)
+	}
+	return nil
+}
+
+func SaveSeed(fileName string, seed *walletseed.Seed) {
+
+	// lock the file
+	lock := LockFile(fileName)
+	if lock == nil {
+		fmt.Println("failed to acquire lock ")
+		return
+	}
+
+	// Open a new file for writing only
+	file, err := os.OpenFile(
+		fileName,
+		os.O_WRONLY|os.O_CREATE|os.O_APPEND,
+		0644|fs.ModeExclusive,
+	)
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer func() {
+		file.Close()
+		lock.Unlock()
+	}()
+
+	// append bytes to file
+	byteSlice := seed.Bytes()
+	_, err = file.Write(byteSlice)
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
+func LockFile(fileName string) *fslock.Lock {
+	var lock *fslock.Lock = nil
+	for i := 0; i < 100; i++ {
+		lock = fslock.New(fileName)
+		lockErr := lock.TryLock()
+		if lockErr != nil {
+			//fmt.Println("falied to acquire lock > " + lockErr.Error())
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+	return lock
+}
+
+func LoadSeed(fileName string) *walletseed.Seed {
+
+	seedSize := len(walletseed.NewSeed().Bytes())
+
+	// lock the file
+	lock := LockFile(fileName)
+	if lock == nil {
+		fmt.Println("failed to acquire lock ")
+		return nil
+	}
+
+	// Open file for reading
+	file, err := os.OpenFile(fileName, os.O_RDWR, fs.ModeExclusive)
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+	defer func() {
+		file.Close()
+		lock.Unlock()
+	}()
+
+	data, err := ioutil.ReadAll(file)
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
+	len := len(data)
+	if len >= seedSize {
+		// use the first seed (32 bytes), truncate and save the rest
+		seedBytes := data[0:seedSize]
+
+		if err := os.Truncate(fileName, 0); err != nil {
+			fmt.Printf("Failed to truncate: %v", err)
+		}
+		if len > seedSize {
+			file.Seek(0, 0)
+			d := data[seedSize:len]
+			_, err = file.Write(d)
+			if err != nil {
+				fmt.Println(err)
+			}
+		}
+		return walletseed.NewSeed(seedBytes)
 	}
 	return nil
 }
