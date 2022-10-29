@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iotaledger/goshimmer/packages/core/ledger/utxo"
-	"github.com/iotaledger/goshimmer/packages/core/ledger/vm/devnetvm"
+	"github.com/iotaledger/goshimmer/packages/protocol/ledger/utxo"
+	"github.com/iotaledger/goshimmer/packages/protocol/ledger/vm/devnetvm"
 	"github.com/iotaledger/hive.go/core/generics/lo"
 	"github.com/iotaledger/hive.go/core/identity"
 
@@ -185,10 +185,10 @@ func GetNodes(url string, numberOfNodes int, noCheck bool) []string {
 					fmt.Println(status)
 					ns := "http://" + strings.Split(service.Address, ":")[0] + ":8080"
 
-					var accessMana float64 = 0
+					var accessMana int64 = 0
 					if noCheck == false {
-						client := client.NewGoShimmerAPI(ns, client.WithHTTPClient(http.Client{Timeout: 60 * time.Second}))
-						mana, _ := client.GetManaFullNodeID(status.ID)
+						client := client.NewGoShimmerAPI(ns, client.WithHTTPClient(http.Client{Timeout: 5 * time.Second}))
+						mana, _ := client.GetManaFullIssuerID(status.ID)
 						accessMana = mana.Access
 					}
 
